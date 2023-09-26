@@ -1,94 +1,91 @@
-import os
-
-import torch
-from torch import nn
-from torchvision import transforms
-from torchvision.utils import save_image
 import pickle
 
-from superresolution.model import srresnet_x8, srresnet_x4, srresnet_x2
-from superresolution.utils import load_pretrained_state_dict
-from basicsr.archs.rrdbnet_arch import RRDBNet
+import pygame
+import torch
+from torchvision import transforms
 
+from superresolution.SRGAN import srresnet_x2, load_pretrained_state_dict
+
+pygame.init()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model_weights_path = "superresolution/SRResNet_x4-SRGAN_ImageNet.pth.tar"
 
-"""
-model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
-loadnet = torch.load("esrgan/RealESRGAN_x4plus.pth")
-model.load_state_dict(loadnet['params_ema'], strict=True)
-model = model.cuda()
-netscale = 4
-"""
+model_path = "superresolution/SRGAN_x2-SRGAN_ImageNet.pth.tar"
+sr_model = srresnet_x2(in_channels=3,out_channels=3, channels=64, num_rcb=16)
+sr_model = load_pretrained_state_dict(sr_model, False, model_path)
 
-trans = transforms.RandomInvert(p=1)
+# Start the verification mode of the model.
+sr_model.eval().cuda()
+# Turn on half-precision inference.
+# model.half()
 
-def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+# Set up the drawing window
+screen = pygame.display.set_mode([1024, 1024])
 
-def build_model() -> nn.Module:
-    # Initialize the super-resolution model
-    sr_model = srresnet_x4()
-    print(f"Build `SRResNet` model successfully.")
-
-    # Load model weights
-    sr_model = load_pretrained_state_dict(sr_model, False, model_weights_path)
-    print(f"Load `SRResNet` model weights `{os.path.abspath(model_weights_path)}` successfully.")
-
-    # Start the verification mode of the model.
-    sr_model.eval()
-
-    # Enable half-precision inference to reduce memory usage and inference time
-    # if args.half:
-    # sr_model.half()
-
-    sr_model = sr_model.to(device)
-
-    return sr_model
-
-
-# Initialize the model
-sr_model = build_model()
-
-
-n_images = 4
-
-with open('network-snapshot-000161.pkl', 'rb') as f:
+with open('network-snapshot-000260.pkl', 'rb') as f:
     G = pickle.load(f)['G_ema'].eval().cuda()  # torch.nn.Module
 
-"""
-z_init = torch.randn([G.z_dim])
-z_end = torch.randn([G.z_dim])
 
-zs = []
-for i in range(n_images):
-    z = torch.lerp(z_init, z_end, i / n_images)
-    zs.append(z)
+# z = torch.lerp(z_init, z_end, i / n_images)
 
-zs = torch.stack(zs, dim=0).cuda()
-"""
-zs = torch.randn([n_images, G.z_dim]).cuda()
+trans = transforms.Compose([
+    transforms.RandomInvert(p=1.0),
+    # transforms.Resize((1024, 1024), antialias=True),
+    transforms.ToPILImage(),
+])
+
+clock = pygame.time.Clock()
+
 c = None                                # class labels (not used in this example)
+i = 1
+n_images = 10
+current_z = last_z = torch.randn([1, G.z_dim]).cuda()
+target_z = torch.randn([1, G.z_dim]).cuda()
+
 with torch.no_grad():
-    img = G(zs, c)                           # NCHW, float32, dynamic range [-1, +1]
+    # Run until the user asks to quit
+    running = True
+    while running:
+        # Did the user click the window close button?
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
 
-    print(img.shape)
+        # Fill the background with white
+        screen.fill((255, 255, 255))
 
-    save_image(img, f"images/images.png")
+        img = G(current_z, c).squeeze(0)
 
-    del G
+        img = torch.clamp(img, min=0.0, max=1.0)
 
-    img = sr_model(img)
-    # img = model(img)
+        # img = sr_model(img).squeeze(0)
 
-    print(img.shape)
+        img = trans(img)
 
-    save_image(img, f"images/scaled_images.png")
+        raw_str = img.tobytes("raw", 'RGBA')
+        pygame_img = pygame.image.fromstring(raw_str, (1024, 1024), 'RGBA')
 
-    img = trans(img)
+        screen.blit(pygame_img, (0, 0))
 
-    save_image(img, f"images/blue_images.png")
+        # Flip the display
+        pygame.display.flip()
+
+        # print(i)
+        i += 1
+
+        if i > 0 and i % n_images == 0:
+            last_z = target_z
+            target_z = torch.randn([1, G.z_dim]).cuda()
+            print("Changed")
+        else:
+            current_z = torch.lerp(last_z, target_z, (i % n_images) / n_images)
+            print((i % n_images) / n_images)
+
+        clock.tick(5)
+
+# Done! Time to quit.
+pygame.quit()
+
 
 
 
